@@ -1,0 +1,10 @@
+<div class="fullview"> <img src="src/pictures/8.3MeanCov/HW2.MC.png" alt="HW2.MC" /></div>
+<div class="slider">
+<div class="button movebackward" title="向上滚动"></div>
+<div class="imglistwrap"><ul class="imglist">
+<li><a id="example2" href="src/pictures/8.3MeanCov/HW2.MC.png" ><img src="src/pictures/8.3MeanCov/HW2.MC.JPEG" alt="HW2.MC" /></a></li>	
+<li><a id="example2" href="src/pictures/8.3MeanCov/HS1.MC.png" ><img src="src/pictures/8.3MeanCov/HS1.MC.JPEG" alt="HS1.MC" /></a></li>	
+<li><a id="example2" href="src/pictures/8.3MeanCov/HT2.MC.png" ><img src="src/pictures/8.3MeanCov/HT2.MC.JPEG" alt="HT2.MC" /></a></li>	
+<li><a id="example2" href="src/pictures/8.3MeanCov/HW1.MC.png" ><img src="src/pictures/8.3MeanCov/HW1.MC.JPEG" alt="HW1.MC" /></a></li>	
+<li><a id="example2" href="src/pictures/8.3MeanCov/HT1.MC.png" ><img src="src/pictures/8.3MeanCov/HT1.MC.JPEG" alt="HT1.MC" /></a></li>	
+<li><a id="example2" href="src/pictures/8.3MeanCov/HS2.MC.png" ><img src="src/pictures/8.3MeanCov/HS2.MC.JPEG" alt="HS2.MC" /></a></li>	

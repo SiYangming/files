@@ -1,0 +1,10 @@
+<div class="fullview"> <img src="src/pictures/3.2MapReg/HW2.MR.png" alt="HW2.MR" /></div>
+<div class="slider">
+<div class="button movebackward" title="向上滚动"></div>
+<div class="imglistwrap"><ul class="imglist">
+<li><a id="example2" href="src/pictures/3.2MapReg/HW2.MR.png" ><img src="src/pictures/3.2MapReg/HW2.MR.JPEG" alt="HW2.MR" /></a></li>	
+<li><a id="example2" href="src/pictures/3.2MapReg/HS1.MR.png" ><img src="src/pictures/3.2MapReg/HS1.MR.JPEG" alt="HS1.MR" /></a></li>	
+<li><a id="example2" href="src/pictures/3.2MapReg/HW1.MR.png" ><img src="src/pictures/3.2MapReg/HW1.MR.JPEG" alt="HW1.MR" /></a></li>	
+<li><a id="example2" href="src/pictures/3.2MapReg/HT2.MR.png" ><img src="src/pictures/3.2MapReg/HT2.MR.JPEG" alt="HT2.MR" /></a></li>	
+<li><a id="example2" href="src/pictures/3.2MapReg/HS2.MR.png" ><img src="src/pictures/3.2MapReg/HS2.MR.JPEG" alt="HS2.MR" /></a></li>	
+<li><a id="example2" href="src/pictures/3.2MapReg/HT1.MR.png" ><img src="src/pictures/3.2MapReg/HT1.MR.JPEG" alt="HT1.MR" /></a></li>	

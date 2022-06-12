@@ -1,0 +1,7 @@
+<div class="fullview"> <img src="src/pictures/9.3DiffFilt/HSvsHW.volcano.png" alt="HSvsHW.volcano" /></div>
+<div class="slider">
+<div class="button movebackward" title="向上滚动"></div>
+<div class="imglistwrap"><ul class="imglist">
+<li><a id="example2" href="src/pictures/9.3DiffFilt/HSvsHW.volcano.png" ><img src="src/pictures/9.3DiffFilt/HSvsHW.volcano.JPEG" alt="HSvsHW.volcano" /></a></li>	
+<li><a id="example2" href="src/pictures/9.3DiffFilt/HWvsHT.volcano.png" ><img src="src/pictures/9.3DiffFilt/HWvsHT.volcano.JPEG" alt="HWvsHT.volcano" /></a></li>	
+<li><a id="example2" href="src/pictures/9.3DiffFilt/HSvsHT.volcano.png" ><img src="src/pictures/9.3DiffFilt/HSvsHT.volcano.JPEG" alt="HSvsHT.volcano" /></a></li>	
