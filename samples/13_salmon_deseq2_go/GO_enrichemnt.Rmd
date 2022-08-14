@@ -1,0 +1,842 @@
+# 富集分析 {#enrichmentanalysis}
+
+GO富集分析和GSEA富集分析的介绍见[GSEA富集分析](http://mp.weixin.qq.com/s/3Nd3urhfRGkw-F0LGZrlZQ])和[GO,GSEA一网打进](http://mp.weixin.qq.com/s/d1KCETQZ88yaOLGwAtpWYg)。
+
+## GO富集分析原理
+
+基于筛选的差异基因或其它自己定义的一组基因，采用**超几何检验**或**Fisher Exact test**判断上调或下调基因在哪些GO或KEGG或其它定义的通路富集。假设背景基因数目为`m`，背景基因中某一通路pathway中注释的基因有`n`个；上调基因有`k`个，上调基因中落于通路pathway的数目为`l`。简单来讲就是比较`l/k`是否显著高于（也可以是低于）`n/m`，即上调基因中落在通路pathway的比例是否高于背景基因在这一通路的比例。(实际计算时，是算的`odds ratio`的差异，`l/(k-l) vs (n-l)/(m-k-n+l))`。
+
+
+|               |   User Genes    |   Genome    |
+|---------------|:---------------:|:-----------:|
+|In Pathway     |      l          |     n-l     |
+|Not In Pathway |      k-l        |  m-k-n+l    |
+
+
+举个例子:
+
+假设人类基因组总注释的基因数有`30,000`, 其中有`40`个基因参与到 `p53 signaling pathway`。差异基因集有`300`个基因，其中有`3`个注释为在`p53 signaling pathway`。富集分析就是检测`3/300`与`40/30000`想比是否比例显著高.
+
+
+|               |   User Genes    |   Genome    |
+|---------------|:---------------:|:-----------:|
+|In Pathway     |      3          |     40      |
+|Not In Pathway |      297        |    29960    |
+
+
+Fisher Exact P-Value =  `0.008`。因为 `P-Value <= 0.01`, 所以说用户提供的基因集显著富集于`p53 signaling pathway`(相比于随机选择)。如果比较的通路比较多，还需要做`multiple hypothesis correction`。
+
+
+## 获取ENTREZ ID
+
+```{bash}
+# GRCh38.idmap从ENSEMBL Biomart下载，三列文件，第一列为ensembl ID，第二列为gene symbol, 第三列为entrez id
+awk 'BEGIN{OFS=FS="\t"}ARGIND==1{entrez[$1]=$3;}\
+	ARGIND==2{if(entrez[$1]!="") print entrez[$1],$2;}' \
+	genome/GRCh38.idmap ehbio.DESeq2.all.DE \
+	>ehbio.DESeq2.all.DE.entrez
+awk 'BEGIN{OFS=FS="\t"}ARGIND==1{symbol[$1]=$2;}\
+	ARGIND==2{if(symbol[$1]!="") print symbol[$1],$2;}' \
+	genome/GRCh38.idmap ehbio.DESeq2.all.DE \
+	>ehbio.DESeq2.all.DE.symbol
+```
+
+
+## GOEAST富集分析
+
+上一步生成的`ehbio.DESeq2.all.DE.symbol`文件用excel打开，选择各个组的基因ID，提交到GOEAST网站 (<http://omicslab.genetics.ac.cn/GOEAST/php/batch_genes.php>)，即可进行富集分析。
+
+`GOEAST`是由中科院遗传所王秀杰老师组2008年发表的在线富集分析工具，访问网站是[http://omicslab.genetics.ac.cn/GOEAST/index.php](http://omicslab.genetics.ac.cn/GOEAST/index.php)。`GOEAST`自发表以来一直在更新维护，并且每周与`Gene Ontology`网站同步GO注释数据库，保证分析结果的时效性和准确性。文章从发表至今，被引用`504`次，总访问量近`140万`次，总使用量近`87万`次。
+
+## GO富集分析R代码
+
+富集分析需要这两个输入参数，注意根据需要修改。
+
+```{r init_go_kegg}
+de_file <- "ehbio.DESeq2.all.DE.entrez"
+org_db <- "org.Hs.eg.db"
+```
+
+因基因数目较多，运行需要至少3G内存，15分钟左右时间，系统可能卡死。
+
+```{r}
+# R包安装
+# source("https://bioconductor.org/biocLite.R")
+# biocLite(c("clusterProfiler", "org.Hs.eg.db"))
+# 包的名字用字符串表示
+suppressMessages(library(org_db, character.only = T))
+
+# 转换成gene symbol
+readable=TRUE
+
+library("clusterProfiler")
+
+# 最好是entrez格式的基因名字
+data <- read.table(de_file, sep="\t", comment="", quote="")
+colnames(data) <- c('gene', 'samp')
+sampC <- unique(data$samp)
+typeL = c("BP", "MF", "CC")
+
+type = "BP"
+
+all_result <- list()
+
+for(samp in sampC) {
+	id <- unique(data[data$samp==samp, 1])
+	
+	BP <- enrichGO(id, org_db, pvalueCutoff=0.05,
+			pAdjustMethod="BH", qvalueCutoff=0.2, ont=type,
+			readable=readable)
+	
+	result <- simplify(BP, cutoff=0.7, by="p.adjust", select_fun=min)
+	result <- as.data.frame(result)
+  result$Group <- samp
+	
+	output <- paste(de_file,"entrez", samp, paste0(type, "_GO.xls"), sep=".")
+	write.table(result, file=output, quote=F, sep="\t", row.names=F,
+	col.names=T)
+	
+	all_result[[samp]] = result[1:10,]
+}
+
+output <- paste(de_file, "all", type, "top10.xls", sep=".")
+result <- do.call(rbind, all_result)
+write.table(result, file=output, quote=F, sep="\t", row.names=F,
+	col.names=T)
+
+```
+
+
+
+输出如下 (后续KEGG富集分析输出结果与此类似，不再赘述)
+
+```
+# 中间R代码
+ehbio.DESeq2.all.DE.entrez.clusterProfileGO.r
+
+# untrt上调基因的BP、MF、CC富集结果
+ehbio.DESeq2.all.DE.entrez.untrt._higherThan_.trt.BP_GO.xls
+ehbio.DESeq2.all.DE.entrez.untrt._higherThan_.trt.CC_GO.xls
+ehbio.DESeq2.all.DE.entrez.untrt._higherThan_.trt.MF_GO.xls
+
+# trt上调基因的BP、MF、CC富集结果
+ehbio.DESeq2.all.DE.entrez.untrt._lowerThan_.trt.BP_GO.xls
+ehbio.DESeq2.all.DE.entrez.untrt._lowerThan_.trt.CC_GO.xls
+ehbio.DESeq2.all.DE.entrez.untrt._lowerThan_.trt.MF_GO.xls
+
+# 上调基因的富集结果和下调基因的富集结果的top10的合并文件
+ehbio.DESeq2.all.DE.entrez.all.BP.top10.xls
+ehbio.DESeq2.all.DE.entrez.all.CC.top10.xls
+ehbio.DESeq2.all.DE.entrez.all.MF.top10.xls
+```
+
+
+代码使用上一步GO富集出的结果 `result`。
+
+```{r, eval=F}
+# 如果上一步运行未成功，运行下面这句话
+result <- read.table("ehbio.DESeq2.all.DE.entrez.all.BP.top10.xls", header=T, row.names = NULL,sep="\t", quote="")
+```
+
+```{r}
+library(plyr)
+library(stringr)
+library(ggplot2)
+library(grid)
+
+options(scipen=999)
+
+numCheck <- function(x){
+  x <- sapply(x, as.character)
+  is.integer  <- grepl("^-?\\d+$", x)
+  is.fraction <- grepl("^-?\\d+\\/\\d+$", x)
+  is.float <- grepl("^-?\\d+\\.\\d+$", x)
+  is.percent <- grepl("[0-9.]+%$", x)
+  is.mixed    <- grepl("^-?\\d+ \\d+\\/\\d+$", x)
+  return(all(is.integer | is.fraction | is.float | is.mixed | is.percent))
+}
+
+mixedToFloat <- function(x){
+  x <- sapply(x, as.character)
+  is.integer  <- grepl("^-?\\d+$", x)
+  is.fraction <- grepl("^-?\\d+\\/\\d+$", x)
+  is.float <- grepl("^-?\\d+\\.\\d+$", x)
+  is.mixed    <- grepl("^-?\\d+ \\d+\\/\\d+$", x)
+  is.percent <- grepl("[0-9.]+%$", x)
+  stopifnot(all(is.integer | is.fraction | is.float | is.mixed | is.percent))
+
+  numbers <- strsplit(x, "[ /%]")
+
+  ifelse(is.integer,  as.numeric(sapply(numbers, `[`, 1)),
+  ifelse(is.percent,  as.numeric(sapply(numbers, `[`, 1))/100,
+  ifelse(is.float,    as.numeric(sapply(numbers, `[`, 1)),
+  ifelse(is.fraction, as.numeric(sapply(numbers, `[`, 1)) /
+                      as.numeric(sapply(numbers, `[`, 2)),
+                      as.numeric(sapply(numbers, `[`, 1)) +
+                      as.numeric(sapply(numbers, `[`, 2)) /
+					  as.numeric(sapply(numbers, `[`, 3))))))
+  
+}
+
+#mixedToFloat(c('1 1/2', '2 3/4', '2/3', '11 1/4', '1'))
+
+
+data <- result
+
+
+xval_type = "numeric"
+
+if (numCheck(data$GeneRatio)) {
+	xval_type = "numeric"
+}
+
+# First order by Term, then order by Sample
+if ("Group" != "CTctCT" & xval_type != "numeric") {
+	data <- data[order(data$Description, data$Group), ]
+}
+
+
+if (xval_type != "string"){
+	if (numCheck(data$GeneRatio)) {
+		data$GeneRatio = mixedToFloat(data$GeneRatio)
+	}
+}
+
+
+if ("qvalue" != "nolog"){
+	log_name = paste0("negLog10_", "qvalue")
+	col_name_data <- colnames(data)
+	col_name_data <- c(col_name_data, log_name)
+	if (! numCheck(data$qvalue)) {
+		stop("**qvalue** column is <strong>not</strong> <mark>numerical</mark> column. Plase do <strong>not</strong> set log10 transform on this column.\n")
+	} else {
+		data$qvalue = mixedToFloat(data$qvalue)
+	}
+	data$log_name <- log10(data$qvalue) * (-1)
+	data$log_name[data$log_name==Inf] = max(data$log_name[data$log_name!=Inf]) + 2
+	colnames(data) <- col_name_data
+}
+
+if (! numCheck(data$negLog10_qvalue)) {
+	stop("<strong>Color</strong> variable must be <mark>numbers</mark>.")
+}
+
+data$negLog10_qvalue = mixedToFloat(data$negLog10_qvalue)
+
+# Get the count of each unique Term
+data_freq <- as.data.frame(table(data$Description))
+
+colnames(data_freq) <- c("Description", "IDctct")
+
+data2 <- merge(data, data_freq, by="Description")
+
+if ("Group" != "CTctCT"){
+	# Collapse sample for each Term 
+	data_samp <- ddply(data2, "Description", summarize,
+		sam_ct_ct_ct=paste(Group, collapse="_"))
+
+	data2 <- merge(data2, data_samp, by="Description")
+
+	#print(data2)
+
+	if (xval_type != "string"){
+		data3 <- data2[order(data2$IDctct, data2$sam_ct_ct_ct, data2$Group, data2$GeneRatio, data2$negLog10_qvalue), ]
+	} else {
+		data3 <- data2[order(data2$IDctct, data2$sam_ct_ct_ct, data2$Group, data2$negLog10_qvalue), ]
+	}
+} else{
+	if (xval_type != "string"){
+		data3 <- data2[order(data2$IDctct, data2$GeneRatio, data2$negLog10_qvalue), ]
+	} else {
+		data3 <- data2[order(data2$IDctct, data2$negLog10_qvalue), ]
+	}
+}
+#print(data3)
+
+term_order <- unique(data3$Description)
+
+data$Description <- factor(data$Description, levels=term_order, ordered=T)
+
+
+
+#print(data)
+rm(data_freq, data2, data3)
+
+if (", shape=Group" != "") {
+	data$Group <- as.factor(data$Group)
+	shape_level <- length(unique(data$Group))
+	shapes = (1:shape_level)%%30
+	shape_order <- c()
+
+	if (length(shape_order) > 1) {
+		data$Group <- factor(data$Group, levels=shape_order, ordered=T)
+	} else {
+		data$Group <- factor(data$Group)
+	}
+
+}
+
+
+
+
+
+
+color_v <- c("green", "red")
+
+p <- ggplot(data, aes(x=GeneRatio,y=Description)) + labs(x="", y="") + labs(title="")
+
+if (("Count" != "") && ("negLog10_qvalue" != "")) {
+	p <- p + geom_point(aes(size=Count, color=negLog10_qvalue , shape=Group)) + 	scale_colour_gradient(low=color_v[1], high=color_v[2], name="negLog10_qvalue")
+} else if ("Count" != "") {
+	p <- p + geom_point(aes(size=Count , shape=Group))
+} else if ("negLog10_qvalue" != "") {
+	p <- p + geom_point(aes(color=negLog10_qvalue , shape=Group)) + 	scale_colour_gradient(low="color_v[1]", high=color_v[2], name="negLog10_qvalue")
+}
+
+if ((", shape=Group" != "") && shape_level > 6) {
+	p <- p + scale_shape_manual(values=shapes)
+}
+
+
+p <- p + scale_y_discrete(labels=function(x) str_wrap(x, width=60))
+ 
+
+p <- p + theme_classic()
+
+
+
+top='top'
+bottom='bottom'
+left='left'
+right='right'
+none='none'
+legend_pos_par <- right
+
+
+p <- p + theme(legend.position=legend_pos_par)
+
+p <- p + theme(axis.line.x=element_line(size=0.4, colour="black", linetype='solid'),
+	axis.line.y=element_line(size=0.4, colour="black", linetype='solid'),
+	axis.ticks = element_line(size=0.4)
+	)
+p
+```
+
+
+
+## KEGG富集分析
+
+富集分析需要这两个输入参数（跟GO相同），注意根据需要修改。
+
+```{r init_go_kegg}
+de_file <- "ehbio.DESeq2.all.DE.entrez"
+org_db <- "org.Hs.eg.db"
+```
+
+
+```{r, echo=T}
+suppressMessages(library(org_db, character.only = T))
+suppressMessages(library(DOSE))
+library(clusterProfiler)
+
+	
+data <- read.table(de_file, sep="\t", comment="", quote="")
+colnames(data) <- c('gene', 'samp')
+sampC <- unique(data$samp)
+
+all_result <- list()
+
+
+for(samp in sampC) {
+	id <- unique(data[data$samp==samp, 1])
+	print(paste0("KEGG enrichment for ", samp))
+		
+	kk <- enrichKEGG(id, organism="hsa", keyType='kegg', pvalueCutoff=0.05,
+		pAdjustMethod="BH", qvalueCutoff=0.2)
+	result <- as.data.frame(setReadable(kk, "org.Hs.eg.db", keytype="ENTREZID"))
+	output <- paste(de_file, samp, "KEGG.xls", sep=".")
+	result$Group <- samp
+
+	write.table(result, file=output, quote=F, sep="\t", row.names=F,
+	col.names=T)
+	all_result[[samp]] = result
+}
+
+output <- paste(de_file, "all.KEGG.xls", sep=".")
+result <- do.call(rbind, all_result)
+write.table(result, file=output, quote=F, sep="\t", row.names=F,
+	col.names=T)
+
+```
+
+
+
+## 富集分析泡泡图绘制
+
+代码使用上一步KEGG富集出的结果 `result`。
+
+```{r}
+library(plyr)
+library(stringr)
+library(ggplot2)
+library(grid)
+
+options(scipen=999)
+
+numCheck <- function(x){
+  x <- sapply(x, as.character)
+  is.integer  <- grepl("^-?\\d+$", x)
+  is.fraction <- grepl("^-?\\d+\\/\\d+$", x)
+  is.float <- grepl("^-?\\d+\\.\\d+$", x)
+  is.percent <- grepl("[0-9.]+%$", x)
+  is.mixed    <- grepl("^-?\\d+ \\d+\\/\\d+$", x)
+  return(all(is.integer | is.fraction | is.float | is.mixed | is.percent))
+}
+
+mixedToFloat <- function(x){
+  x <- sapply(x, as.character)
+  is.integer  <- grepl("^-?\\d+$", x)
+  is.fraction <- grepl("^-?\\d+\\/\\d+$", x)
+  is.float <- grepl("^-?\\d+\\.\\d+$", x)
+  is.mixed    <- grepl("^-?\\d+ \\d+\\/\\d+$", x)
+  is.percent <- grepl("[0-9.]+%$", x)
+  stopifnot(all(is.integer | is.fraction | is.float | is.mixed | is.percent))
+
+  numbers <- strsplit(x, "[ /%]")
+
+  ifelse(is.integer,  as.numeric(sapply(numbers, `[`, 1)),
+  ifelse(is.percent,  as.numeric(sapply(numbers, `[`, 1))/100,
+  ifelse(is.float,    as.numeric(sapply(numbers, `[`, 1)),
+  ifelse(is.fraction, as.numeric(sapply(numbers, `[`, 1)) /
+                      as.numeric(sapply(numbers, `[`, 2)),
+                      as.numeric(sapply(numbers, `[`, 1)) +
+                      as.numeric(sapply(numbers, `[`, 2)) /
+					  as.numeric(sapply(numbers, `[`, 3))))))
+  
+}
+
+#mixedToFloat(c('1 1/2', '2 3/4', '2/3', '11 1/4', '1'))
+
+
+data <- result
+
+
+xval_type = "numeric"
+
+if (numCheck(data$GeneRatio)) {
+	xval_type = "numeric"
+}
+
+# First order by Term, then order by Sample
+if ("Group" != "CTctCT" & xval_type != "numeric") {
+	data <- data[order(data$Description, data$Group), ]
+}
+
+
+if (xval_type != "string"){
+	if (numCheck(data$GeneRatio)) {
+		data$GeneRatio = mixedToFloat(data$GeneRatio)
+	}
+}
+
+
+if ("qvalue" != "nolog"){
+	log_name = paste0("negLog10_", "qvalue")
+	col_name_data <- colnames(data)
+	col_name_data <- c(col_name_data, log_name)
+	if (! numCheck(data$qvalue)) {
+		stop("**qvalue** column is <strong>not</strong> <mark>numerical</mark> column. Plase do <strong>not</strong> set log10 transform on this column.\n")
+	} else {
+		data$qvalue = mixedToFloat(data$qvalue)
+	}
+	data$log_name <- log10(data$qvalue) * (-1)
+	data$log_name[data$log_name==Inf] = max(data$log_name[data$log_name!=Inf]) + 2
+	colnames(data) <- col_name_data
+}
+
+if (! numCheck(data$negLog10_qvalue)) {
+	stop("<strong>Color</strong> variable must be <mark>numbers</mark>.")
+}
+
+data$negLog10_qvalue = mixedToFloat(data$negLog10_qvalue)
+
+# Get the count of each unique Term
+data_freq <- as.data.frame(table(data$Description))
+
+colnames(data_freq) <- c("Description", "IDctct")
+
+data2 <- merge(data, data_freq, by="Description")
+
+if ("Group" != "CTctCT"){
+	# Collapse sample for each Term 
+	data_samp <- ddply(data2, "Description", summarize,
+		sam_ct_ct_ct=paste(Group, collapse="_"))
+
+	data2 <- merge(data2, data_samp, by="Description")
+
+	#print(data2)
+
+	if (xval_type != "string"){
+		data3 <- data2[order(data2$IDctct, data2$sam_ct_ct_ct, data2$Group, data2$GeneRatio, data2$negLog10_qvalue), ]
+	} else {
+		data3 <- data2[order(data2$IDctct, data2$sam_ct_ct_ct, data2$Group, data2$negLog10_qvalue), ]
+	}
+} else{
+	if (xval_type != "string"){
+		data3 <- data2[order(data2$IDctct, data2$GeneRatio, data2$negLog10_qvalue), ]
+	} else {
+		data3 <- data2[order(data2$IDctct, data2$negLog10_qvalue), ]
+	}
+}
+#print(data3)
+
+term_order <- unique(data3$Description)
+
+data$Description <- factor(data$Description, levels=term_order, ordered=T)
+
+
+
+#print(data)
+rm(data_freq, data2, data3)
+
+if (", shape=Group" != "") {
+	data$Group <- as.factor(data$Group)
+	shape_level <- length(unique(data$Group))
+	shapes = (1:shape_level)%%30
+	shape_order <- c()
+
+	if (length(shape_order) > 1) {
+		data$Group <- factor(data$Group, levels=shape_order, ordered=T)
+	} else {
+		data$Group <- factor(data$Group)
+	}
+
+}
+
+
+
+
+
+
+color_v <- c("green", "red")
+
+p <- ggplot(data, aes(x=GeneRatio,y=Description)) + labs(x="", y="") + labs(title="")
+
+if (("Count" != "") && ("negLog10_qvalue" != "")) {
+	p <- p + geom_point(aes(size=Count, color=negLog10_qvalue , shape=Group)) + 	scale_colour_gradient(low=color_v[1], high=color_v[2], name="negLog10_qvalue")
+} else if ("Count" != "") {
+	p <- p + geom_point(aes(size=Count , shape=Group))
+} else if ("negLog10_qvalue" != "") {
+	p <- p + geom_point(aes(color=negLog10_qvalue , shape=Group)) + 	scale_colour_gradient(low="color_v[1]", high=color_v[2], name="negLog10_qvalue")
+}
+
+if ((", shape=Group" != "") && shape_level > 6) {
+	p <- p + scale_shape_manual(values=shapes)
+}
+
+
+p <- p + scale_y_discrete(labels=function(x) str_wrap(x, width=60))
+ 
+
+p <- p + theme_classic()
+
+
+
+top='top'
+bottom='bottom'
+left='left'
+right='right'
+none='none'
+legend_pos_par <- right
+
+
+p <- p + theme(legend.position=legend_pos_par)
+
+p <- p + theme(axis.line.x=element_line(size=0.4, colour="black", linetype='solid'),
+	axis.line.y=element_line(size=0.4, colour="black", linetype='solid'),
+	axis.ticks = element_line(size=0.4)
+	)
+p
+```
+
+
+
+
+
+## 富集分析泡泡图绘制 (在线绘制 <http://www.ehbio.com/ImageGP>)
+
+(直接拷贝到Terminal运行)
+
+```
+sp_enrichmentPlot.sh -f ehbio.DESeq2.all.DE.entrez.untrt._higherThan_.trt.KEGG.xls \
+	-o GeneRatio -T numeric -v Description -c qvalue -s Count -l qvalue 
+# 或使用在线工具 www.ehbio.com/ImageGP
+```
+
+## 自有注释数据用于分析
+
+### 数据准备
+
+从<http://software.broadinstitute.org/gsea/msigdb/collections.jsp> 下载的HallMark基因集`h.all.v6.2.entrez.gmt`。
+
+```{bash}
+head h.all.v6.2.entrez.gmt
+```
+
+数据转成2列格式，第一列为通路，第二列为基因
+
+```{bash}
+awk 'BEGIN{OFS=FS="\t"}{if(FNR==1) print "ont\tgene"; for(i=3;i<=NF;i++) print $1,$i;}' h.all.v6.2.entrez.gmt >h.all.v6.2.entrez.gmt.forGO
+
+head h.all.v6.2.entrez.gmt.forGO
+```
+
+```{r, echo=T}
+self_anno <- read.table("h.all.v6.2.entrez.gmt.forGO", header=T, sep="\t", quote="")
+
+# 没具体看代码怎么写的，保险期间，设置跟示例一样的列名字
+colnames(self_anno) <- c("ont", "gene")
+
+data <- read.table(de_file, sep="\t", comment="", quote="")
+colnames(data) <- c('gene', 'samp')
+sampC <- unique(data$samp)
+
+all_result <- list()
+
+
+for(samp in sampC) {
+	id <- unique(data[data$samp==samp, 1])
+	print(paste0("Hallmark enrichment for ", samp))
+	
+	# self_enrich与之前enrichGO的输出结果格式一致
+  self_enrich <- enricher(id, TERM2GENE=self_anno, pvalueCutoff=0.05,
+		pAdjustMethod="BH", qvalueCutoff=0.2)
+	result <- as.data.frame(setReadable(self_enrich, "org.Hs.eg.db", keytype="ENTREZID"))
+	output <- paste(de_file, samp, "Hallmark.xls", sep=".")
+	result$Group <- samp
+
+	write.table(result, file=output, quote=F, sep="\t", row.names=F,
+	col.names=T)
+	all_result[[samp]] = result
+}
+
+output <- paste(de_file, "all.Hallmark.xls", sep=".")
+result <- do.call(rbind, all_result)
+write.table(result, file=output, quote=F, sep="\t", row.names=F,
+	col.names=T)
+#
+```
+
+富集分析泡泡图
+
+```{r}
+library(plyr)
+library(stringr)
+library(ggplot2)
+library(grid)
+
+options(scipen=999)
+
+numCheck <- function(x){
+  x <- sapply(x, as.character)
+  is.integer  <- grepl("^-?\\d+$", x)
+  is.fraction <- grepl("^-?\\d+\\/\\d+$", x)
+  is.float <- grepl("^-?\\d+\\.\\d+$", x)
+  is.percent <- grepl("[0-9.]+%$", x)
+  is.mixed    <- grepl("^-?\\d+ \\d+\\/\\d+$", x)
+  return(all(is.integer | is.fraction | is.float | is.mixed | is.percent))
+}
+
+mixedToFloat <- function(x){
+  x <- sapply(x, as.character)
+  is.integer  <- grepl("^-?\\d+$", x)
+  is.fraction <- grepl("^-?\\d+\\/\\d+$", x)
+  is.float <- grepl("^-?\\d+\\.\\d+$", x)
+  is.mixed    <- grepl("^-?\\d+ \\d+\\/\\d+$", x)
+  is.percent <- grepl("[0-9.]+%$", x)
+  stopifnot(all(is.integer | is.fraction | is.float | is.mixed | is.percent))
+
+  numbers <- strsplit(x, "[ /%]")
+
+  ifelse(is.integer,  as.numeric(sapply(numbers, `[`, 1)),
+  ifelse(is.percent,  as.numeric(sapply(numbers, `[`, 1))/100,
+  ifelse(is.float,    as.numeric(sapply(numbers, `[`, 1)),
+  ifelse(is.fraction, as.numeric(sapply(numbers, `[`, 1)) /
+                      as.numeric(sapply(numbers, `[`, 2)),
+                      as.numeric(sapply(numbers, `[`, 1)) +
+                      as.numeric(sapply(numbers, `[`, 2)) /
+					  as.numeric(sapply(numbers, `[`, 3))))))
+  
+}
+
+#mixedToFloat(c('1 1/2', '2 3/4', '2/3', '11 1/4', '1'))
+
+
+data <- result
+
+xval_ho <- c()
+
+if ("Group" != "CTctCT" & length(xval_ho) > 1) {
+	data$Group <- factor(data$Group, levels=xval_ho, ordered=T)
+} #else {
+#	data$GeneRatio <- factor(data$GeneRatio)
+#}
+
+xval_type = "numeric"
+
+if (numCheck(data$GeneRatio)) {
+	xval_type = "numeric"
+}
+
+# First order by Term, then order by Sample
+if ("Group" != "CTctCT" & xval_type != "numeric") {
+	data <- data[order(data$Description, data$Group), ]
+}
+
+
+if (xval_type != "string"){
+	if (numCheck(data$GeneRatio)) {
+		data$GeneRatio = mixedToFloat(data$GeneRatio)
+	}
+}
+
+
+if ("qvalue" != "nolog"){
+	log_name = paste0("negLog10_", "qvalue")
+	col_name_data <- colnames(data)
+	col_name_data <- c(col_name_data, log_name)
+	if (! numCheck(data$qvalue)) {
+		stop("**qvalue** column is <strong>not</strong> <mark>numerical</mark> column. Plase do <strong>not</strong> set log10 transform on this column.\n")
+	} else {
+		data$qvalue = mixedToFloat(data$qvalue)
+	}
+	data$log_name <- log10(data$qvalue) * (-1)
+	data$log_name[data$log_name==Inf] = max(data$log_name[data$log_name!=Inf]) + 2
+	colnames(data) <- col_name_data
+}
+
+if (! numCheck(data$negLog10_qvalue)) {
+	stop("<strong>Color</strong> variable must be <mark>numbers</mark>.")
+}
+
+data$negLog10_qvalue = mixedToFloat(data$negLog10_qvalue)
+
+# Get the count of each unique Term
+data_freq <- as.data.frame(table(data$Description))
+
+colnames(data_freq) <- c("Description", "IDctct")
+
+data2 <- merge(data, data_freq, by="Description")
+
+if ("Group" != "CTctCT"){
+	# Collapse sample for each Term 
+	data_samp <- ddply(data2, "Description", summarize,
+		sam_ct_ct_ct=paste(Group, collapse="_"))
+
+	data2 <- merge(data2, data_samp, by="Description")
+
+	#print(data2)
+
+	if (xval_type != "string"){
+		data3 <- data2[order(data2$IDctct, data2$sam_ct_ct_ct, data2$Group, data2$GeneRatio, data2$negLog10_qvalue), ]
+	} else {
+		data3 <- data2[order(data2$IDctct, data2$sam_ct_ct_ct, data2$Group, data2$negLog10_qvalue), ]
+	}
+} else{
+	if (xval_type != "string"){
+		data3 <- data2[order(data2$IDctct, data2$GeneRatio, data2$negLog10_qvalue), ]
+	} else {
+		data3 <- data2[order(data2$IDctct, data2$negLog10_qvalue), ]
+	}
+}
+#print(data3)
+
+term_order <- unique(data3$Description)
+
+data$Description <- factor(data$Description, levels=term_order, ordered=T)
+
+
+
+#print(data)
+rm(data_freq, data2, data3)
+
+if (", shape=Group" != "") {
+	data$Group <- as.factor(data$Group)
+	shape_level <- length(unique(data$Group))
+	shapes = (1:shape_level)%%30
+	shape_order <- c()
+
+	if (length(shape_order) > 1) {
+		data$Group <- factor(data$Group, levels=shape_order, ordered=T)
+	} else {
+		data$Group <- factor(data$Group)
+	}
+
+}
+
+
+color_v <- c("green", "red")
+
+p <- ggplot(data, aes(x=GeneRatio,y=Description)) + labs(x="", y="") + labs(title="")
+
+if (("Count" != "") && ("negLog10_qvalue" != "")) {
+	p <- p + geom_point(aes(size=Count, color=negLog10_qvalue , shape=Group)) + 	scale_colour_gradient(low=color_v[1], high=color_v[2], name="negLog10_qvalue")
+} else if ("Count" != "") {
+	p <- p + geom_point(aes(size=Count , shape=Group))
+} else if ("negLog10_qvalue" != "") {
+	p <- p + geom_point(aes(color=negLog10_qvalue , shape=Group)) + 	scale_colour_gradient(low="color_v[1]", high=color_v[2], name="negLog10_qvalue")
+}
+
+if ((", shape=Group" != "") && shape_level > 6) {
+	p <- p + scale_shape_manual(values=shapes)
+}
+
+
+p <- p + scale_y_discrete(labels=function(x) str_wrap(x, width=60))
+ 
+
+p <- p + theme_bw() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+
+
+top='top'
+bottom='bottom'
+left='left'
+right='right'
+none='none'
+legend_pos_par <- right
+
+
+p <- p + theme(legend.position=legend_pos_par)
+
+p <- p + theme(	panel.grid = element_blank(), panel.border=element_blank(), 
+	legend.background = element_blank(),
+	axis.line.x=element_line(size=0.4, colour="black", linetype='solid'),
+	axis.line.y=element_line(size=0.4, colour="black", linetype='solid'),
+	axis.ticks = element_line(size=0.4)
+	)
+p
+```
+
+## 富集分析结果导入Cytoscape进行网络展示
+
+
+数据准备
+
+```{bash}
+# $1表示第1列，通路名字
+# $8表示第8列，通路中基因名字
+# 请根据需要修改
+
+# 生成网络文件
+awk 'BEGIN{OFS=FS="\t"}{if(FNR==1) print $1,$8; else {split($8,a,"/"); for(i in a) print $1,a[i]}}' ehbio.DESeq2.all.DE.entrez.all.Hallmark.xls > ehbio.DESeq2.all.DE.entrez.all.Hallmark.xls.fornetwork.txt
+
+## 生成属性文件
+
+awk 'BEGIN{OFS=FS="\t"}{if(FNR==1) print $1,"ehbioType"; else { print $1,"Pathway"; split($8,a,"/"); for(i in a) print a[i], "Gene"}}' ehbio.DESeq2.all.DE.entrez.all.Hallmark.xls > ehbio.DESeq2.all.DE.entrez.all.Hallmark.xls.fornetwork.attr
+
+head ehbio.DESeq2.all.DE.entrez.all.Hallmark.xls.fornetwork.txt
+```
+
+
+

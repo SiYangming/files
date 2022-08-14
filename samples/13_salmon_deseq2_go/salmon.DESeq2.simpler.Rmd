@@ -1,0 +1,163 @@
+```{r}
+library(DESeq2)
+library("RColorBrewer")
+library("gplots")
+library("amap")
+library("ggplot2")
+library("BiocParallel")
+library("YSX")
+```
+
+## 初始化，定义输入、输出和参数
+
+```{r}
+# Prefix for all output file 
+output_prefix = "ehbio"
+
+# pipelineSalmon.sh生成的一个两列文件，第一列是样品名字，第二列是salmon定量结果的位置，注意第二列文件的路径
+file = "salmon.output"
+# 分组信息表
+sampleFile = "sampleFile"
+# 分组信息所在列名字
+design="conditions"
+# 转录本和基因的对应关系
+tx2gene="genome/GRCh38.tx2gene"
+# 输入数据类型，salmon结果或reads count 矩阵
+type="salmon"
+# 差异基因参数
+padj=0.05
+log2FC=1
+```
+## 数据读入和标准化
+
+```{r}
+dds <- salmon2deseq(file, sampleFile, design=design, tx2gene=tx2gene)
+normexpr <- deseq2normalizedExpr(dds)
+```
+## 检查标准化后数据的分布
+
+```{r}
+# normalizedExpr2DistribBoxplot(normexpr, 
+#                               saveplot=paste(output_prefix, "DESeq2.normalizedExprDistrib.pdf", sep="."))
+normalizedExpr2DistribBoxplot(normexpr)
+```
+
+## 样本聚类
+
+```{r}
+# clusterSampleHeatmap2(normexpr$rlog, 
+#                       cor_file=paste(output_prefix, "DESeq2.sampleCorrelation.txt", sep="."), 
+#                       , sep="."))
+clusterSampleHeatmap2(normexpr$rlog[1:5000,], cor_file=paste(output_prefix, "DESeq2.sampleCorrelation.txt", sep="."), saveplot=paste(output_prefix, "DESeq2.sampleCorrelation.pdf"))
+clusterSampleUpperTriPlot(normexpr$rlog[1:5000,], cor_file=paste(output_prefix, "DESeq2.sampleCorrelation.txt", sep="."))
+```
+
+```{r}
+multipleGroupDEgenes(dds, design=design, output_prefix=output_prefix, padj=padj, log2FC=log2FC)
+```
+
+## Replot
+
+```{r}
+res_output <- read.table("ehbio.DESeq2.trt._vs_.untrt.results.xls", header=T, row.names=1)
+groupA = 'trt'
+groupB = 'untrt'
+res_output$level <- ifelse(res_output$padj<=padj,
+                             ifelse(res_output$log2FoldChange>=log2FC,
+                                    paste(groupA,"UP"),
+                             ifelse(res_output$log2FoldChange<=(-1)*(log2FC),
+                                    paste(groupB,"UP"), "NoDiff")) , "NoDiff")
+volcanoPlot(res_output, "log2FoldChange", "padj",
+              "level")
+
+rankPlot(res_output, label=10, width=20)
+```
+
+```{r}
+a <- c("Pou5f1","Gata4")
+names(a) <-  c("ENSG00000116584","ENSG00000256235")
+rankPlot(res_output, label=a, width=20)
+```
+```{r}
+rankPlot
+```
+
+
+```{r}
+data_line <- data[order(data[[order_col]]),,drop=F]
+  row_num <- nrow(data_line)
+  data_line$x <- 1:row_num
+  data_line$xend <- 2:(row_num+1)
+  if(!is.null(label)){
+    if (length(label) == 1 & is.numeric(label)) {
+      # Label top
+      data_line$id__ct <- rownames(data_line)
+      data_line[(label+1):(row_num-label),"id__ct"] <- NA
+    } else {
+      if(is.null(names(label))){
+        # Label given ids
+        data_line$id__ct <- NA
+        data_line$id__ct <- label[match(rownames(data_line), label)]
+      } else {
+        # Label substitute ids
+        data_line$id__ct <- NA
+        data_line$id__ct <- label[match(rownames(data_line), names(label))]
+      }
+    }
+  }
+
+
+  p <- ggplot(data_line) +
+    geom_segment(aes_string(x="x", xend="x",y=order_col,yend=0, color=order_col), alpha=alpha)
+  #geom_linerange(aes_string(x="x", ymin=order_col,ymax=0, color=order_col), alpha=alpha)
+  #geom_rect(aes_string(xmin="x", xmax="xend",ymin=order_col,ymax=0, fill=order_col), alpha=alpha)
+
+  if(length(colorvector)==2){
+    p <- p + scale_color_gradient(low=colorvector[1], high=colorvector[2])
+  } else if(length(colorvector)==3){
+    #names(colorvector) <- c("low","mid","high")
+    #colorvector <- as.list(colorvector)
+    #p <- p + scale_color_gradient2(colorvector, midpoint = midpoint)
+    p <- p + scale_color_gradient2(low=colorvector[1], mid=colorvector[2],
+                                   high=colorvector[3], midpoint = midpoint)
+  } else {
+    stop("Illegel color vector.")
+  }
+  p <- p + theme_classic() + geom_hline(yintercept = midpoint, linetype="dotted")
+
+  if(!is.null(label)){
+    # 标记基因名字
+    p <- p + ggrepel::geom_text_repel(aes_string(x="x", y=order_col, label="id__ct"))
+  }
+
+  if(!is.null(saveplot)){
+    ggsave(plot=p, filename=saveplot, units=c("cm"),...)
+  }
+
+  return(p)
+
+}
+```
+
+```{r}
+a <- data.frame(log2FoldChange=rnorm(1000), row.names=paste0("YSX",1:1000))
+
+## Raw plot
+
+rankPlot(a)
+
+## Label top 10
+
+rankPlot(a, label=10)
+
+## Label specified points
+
+rankPlot(a, label=c("YSX1","YSX2","YSX10"))
+
+## Label specified points with new names
+
+b <- c("A","B","C")
+names(b) <- c("YSX1","YSX2","YSX10")
+rankPlot(a, label=b)
+
+```

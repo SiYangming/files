@@ -1,0 +1,270 @@
+---
+title: "PCA"
+author: 陈同 "(chentong_biology@163.com)"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(cache = TRUE, autodep=TRUE)
+set.seed(0304)
+```
+
+```{r used_packages}
+library(knitr)
+library(psych)
+library(reshape2)
+library(ggplot2)
+library(scatterplot3d)
+```
+
+
+
+### 主成分分析简介
+
+主成分分析 (PCA, principal component analysis)是一种数学降维方法, 利用正交变换 (orthogonal transformation)把一系列可能**线性相关的变量**转换为一组**线性不相关的新变量**，也称为主成分，从而利用新变量在更小的维度下展示数据的特征。
+
+主成分是原有变量的线性组合，其数目不多于原始变量。组合之后，相当于我们获得了一批新的观测数据，这些数据的含义不同于原有数据，但包含了之前数据的大部分特征，并且有着较低的维度，便于进一步的分析。
+
+在空间上，PCA可以理解为把原始数据投射到一个新的坐标系统，第一主成分为第一坐标轴，它的含义代表了原始数据中多个变量经过某种变换得到的新变量的变化区间；第二成分为第二坐标轴，代表了原始数据中多个变量经过某种变换得到的第二个新变量的变化区间。这样我们把利用原始数据解释样品的差异转变为利用新变量解释样品的差异。
+
+这种投射方式会有很多，为了最大限度保留对原始数据的解释，一般会用最大方差理论或最小损失理论，使得第一主成分有着最大的方差或变异数 (就是说其能尽量多的解释原始数据的差异)；随后的每一个主成分都与前面的主成分正交，且有着仅次于前一主成分的最大方差 (正交简单的理解就是两个主成分空间夹角为90°，两者之间无线性关联，从而完成去冗余操作)。
+
+
+### 主成分分析的意义
+
+1. 简化运算。
+
+       在问题研究中，为了全面系统地分析问题，我们通常会收集众多的影响因素也就是众多的变量。这样会使得研究更丰富，通常也会带来较多的冗余数据和复杂的计算量。
+       
+       比如我们我们测序了100种样品的基因表达谱借以通过分子表达水平的差异对这100种样品进行分类。在这个问题中，研究的变量就是不同的基因。每个基因的表达都可以在一定程度上反应样品之间的差异，但某些基因之间却有着调控、协同或拮抗的关系，表现为它们的表达值存在一些相关性，这就造成了统计数据所反映的信息存在一定程度的冗余。另外假如某些基因如持家基因在所有样本中表达都一样，它们对于解释样本的差异也没有意义。这么多的变量在后续统计分析中会增大运算量和计算复杂度，应用PCA就可以在尽量多的保持变量所包含的信息又能维持尽量少的变量数目，帮助简化运算和结果解释。
+
+
+2. 去除数据噪音。
+
+       比如说我们在样品的制备过程中，由于不完全一致的操作，导致样品的状态有细微的改变，从而造成一些持家基因也发生了相应的变化，但变化幅度远小于核心基因 (一般认为噪音的方差小于信息的方差）。而PCA在降维的过程中滤去了这些变化幅度较小的噪音变化，增大了数据的信噪比。
+
+3. 利用散点图实现多维数据可视化。
+
+       在上面的表达谱分析中，假如我们有1个基因，可以在线性层面对样本进行分类；如果我们有2个基因，可以在一个平面对样本进行分类；如果我们有3个基因，可以在一个立体空间对样本进行分类；如果有更多的基因，比如说n个，那么每个样品就是n维空间的一个点，则很难在图形上展示样品的分类关系。利用PCA分析，我们可以选取贡献最大的2个或3个主成分作为数据代表用以可视化。这比直接选取三个表达变化最大的基因更能反映样品之间的差异。（利用Pearson相关系数对样品进行聚类在样品数目比较少时是一个解决办法）
+
+4. 发现隐性相关变量。
+
+      我们在合并冗余原始变量得到主成分过程中，会发现某些原始变量对同一主成分有着相似的贡献，也就是说这些变量之间存在着某种相关性，为相关变量。同时也可以获得这些变量对主成分的贡献程度。对基因表达数据可以理解为发现了存在协同或拮抗关系的基因。
+
+
+### PCA应用
+
+#### 数据初始化
+
+```{r}
+# 提供2套测试数据
+# 一篇单细胞测试数据 "HiSeq301-RSEM-linear_values.txt"
+exprData <- "ehbio_salmon.DESeq2.normalized.symbol.txt"
+# 非必须
+sampleFile <- "sampleFile"
+```
+
+#### 数据读入
+
+```{r nbt_hiseq_data}
+# 数据集来源于 http://satijalab.org/seurat/old-get-started/
+# 原始下载链接 http://www.broadinstitute.org/~rahuls/seurat/seurat_files_nbt.zip
+# 为了保证文章的使用，文末附有数据的新下载链接，以防原链接失效
+data <- read.table(exprData, header=T, row.names=NULL,sep="\t")
+
+# 处理重复名字，谨慎处理，先找到名字重复的原因再决定是否需要按一下方式都保留
+rownames_data <- make.names(data[,1],unique=T)
+data <- data[,-1,drop=F]
+rownames(data) <- rownames_data
+
+data <- data[rowSums(data)>0,]
+data <- data[apply(data, 1, var)!=0,]
+dim(data)
+data[1:4,1:6]
+```
+
+#### 数据预处理
+
+```{r}
+# 计算中值绝对偏差 (MAD, median absolute deviation)度量基因表达变化幅度
+# 在基因表达中，尽管某些基因很小的变化会导致重要的生物学意义，
+# 但是很小的观察值会引入很大的背景噪音，因此也意义不大。
+mads <- apply(data, 1, mad)
+
+data <- data[rev(order(mads)),]
+dim(data)
+```
+
+#### PCA分析
+
+```{r pca_cluster}
+# Pay attention to the format of PCA input 
+# Rows are samples and columns are variables
+data_t <- t(data)
+variableL <- ncol(data_t)
+
+if(sampleFile != "") {
+  sample <- read.table(sampleFile,header = T, row.names=1,sep="\t")
+  data_t_m <- merge(data_t, sample, by=0)
+  rownames(data_t_m) <- data_t_m$Row.names
+  data_t <- data_t_m[,-1]
+  head(sample)
+}
+# By default, prcomp will centralized the data using mean.
+# Normalize data for PCA by dividing each data by column standard deviation.
+# Often, we would normalize data.
+# Only when we care about the real number changes other than the trends,
+# `scale` can be set to TRUE. 
+# We will show the differences of scaling and un-scaling effects.
+pca <- prcomp(data_t[,1:variableL], scale=T)
+
+# sdev: standard deviation of the principle components.
+# Square to get variance
+# percentVar <- pca$sdev^2 / sum( pca$sdev^2)
+
+# To check what's in pca
+print(str(pca))
+```
+
+#### PCA展示样品分组信息
+
+```{r}
+# PCA结果提取和可视化神器
+# http://www.sthda.com/english/articles/31-principal-component-methods-in-r-practical-guide/112-pca-principal-component-analysis-essentials/
+library(factoextra)
+```
+
+碎石图展示每个主成分的贡献
+
+```{r}
+#pdf("1.pdf")
+fviz_eig(pca, addlabels = TRUE)
+#dev.off()
+```
+
+PCA样品聚类信息展示
+
+```{r}
+fviz_pca_ind(pca)
+```
+
+```{r}
+# 样品数目中等时，自动调整文本标记的位置
+fviz_pca_ind(pca, repel=T)
+```
+
+根据样品分组上色
+
+
+```{r}
+# 根据分组上色并绘制
+fviz_pca_ind(pca, col.ind=data_t$conditions, mean.point=F, addEllipses = T, legend.title="Groups")
+```
+
+
+增加不同属性的椭圆
+
+* "convex": plot convex hull of a set o points.
+* "confidence": plot confidence ellipses around group mean points as the function coord.ellipse() [in FactoMineR].
+* "t": assumes a multivariate t-distribution.
+* "norm": assumes a multivariate normal distribution.
+* "euclid": draws a circle with the radius equal to level, representing the euclidean distance from the center. This ellipse probably won’t appear circular unless coord_fixed() is applied.
+
+```{r}
+# 根据分组上色并绘制
+fviz_pca_ind(pca, col.ind=data_t$conditions, mean.point=F, addEllipses = T, legend.title="Groups", ellipse.type="confidence", ellipse.level=0.95)
+```
+
+
+展示贡献最大的变量 (基因)
+
+1. 展示与主坐标轴的相关性大于0.99的变量
+
+```{r}
+# Visualize variable with cos2 >= 0.99
+fviz_pca_var(pca, select.var = list(cos2 = 0.99), repel=T, col.var = "cos2", geom.var = c("arrow", "text") )
+
+fviz_pca_var(pca, select.var = list(cos2 = 0.95), repel=T, axes = c(2, 3), col.var = "cos2", geom.var = c("arrow", "text"))
+```
+2. 展示与主坐标轴最相关的10个变量
+
+```{r}
+# Top 10 active variables with the highest cos2
+fviz_pca_var(pca, select.var= list(cos2 = 10), repel=T, col.var = "contrib")
+```
+
+3. 展示自己关心的变量（基因）与主坐标轴的相关性分布
+
+```{r}
+# Select by names
+# 这里选择的是MAD值最大的几个基因
+name <- list(name = c("FN1", "DCN", "CEMIP","CCDC80","IGFBP5","COL1A1","GREM1"))
+fviz_pca_var(pca, select.var = name)
+```
+biPLot同时展示样本分组和关键基因
+
+```{r}
+# top 5 contributing individuals and variable
+fviz_pca_biplot(pca,
+            fill.ind=data_t$conditions,
+            palette="joo",
+            addEllipses = T, 
+            ellipse.type="confidence",
+            ellipse.level=0.95,
+            mean.point=F,
+            col.var="contrib",
+            gradient.cols = "RdYlBu",
+            select.var = list(contrib = 10),
+            ggtheme = theme_minimal())
+```
+
+
+
+
+### PCA总结
+
+### PCA注意事项
+
+1. 一般说来，在PCA之前原始数据需要中心化（centering，数值减去平均值）。中心化的方法很多，除了平均值中心化（mean-centering）外，还包括其它更稳健的方法，比如中位数中心化等。
+
+2. 除了中心化以外，定标 (Scale, 数值除以标准差) 也是数据前处理中需要考虑的一点。如果数据没有定标，则原始数据中方差大的变量对主成分的贡献会很大。数据的方差与其量级成指数关系，比如一组数据`(1,2,3,4)`的方差是`1.67`，而`(10,20,30,40)`的方差就是`167`,数据变大10倍，方差放大了100倍。
+
+3. 但是定标(scale)可能会有一些负面效果，因为定标后变量之间的权重就是变得相同。如果我们的变量中有噪音的话，我们就在无形中把噪音和信息的权重变得相同，但PCA本身无法区分信号和噪音。在这样的情形下，我们就不必做定标。
+
+4. 一般而言，对于度量单位不同的指标或是取值范围彼此差异非常大的指标不直接由其协方差矩阵出发进行主成分分析，而应该考虑对数据的标准化。比如度量单位不同，有万人、万吨、万元、亿元，而数据间的差异性也非常大，小则几十大则几万，因此在用协方差矩阵求解主成分时存在**协方差矩阵中数据的差异性很大**。在后面提取主成分时发现，**只提取了一个主成分**，而此时并不能将所有的变量都解释到，这就没有真正起到**降维**的作用。此时就需要对数据进行定标(scale)，这样提取的主成分可以覆盖更多的变量，这就实现主成分分析的最终目的。但是对原始数据进行标准化后更倾向于使得各个指标的作用在主成分分析构成中相等。对于数据取值范围不大或是度量单位相同的指标进行标准化处理后，其主成分分析的结果与仍由协方差矩阵出发求得的结果有较大区别。这是因为对数据标准化的过程实际上就是**抹杀原有变量离散程度差异的过程**，标准化后方差均为1，而实际上方差是对数据信息的重要概括形式，也就是说，对原始数据进行标准化后抹杀了一部分重要信息，因此才使得标准化后各变量在主成分构成中的作用趋于相等。因此，**对同度量或是取值范围在同量级的数据**还是直接使用非定标数据求解主成分为宜。
+
+5. 中心化和定标都会受数据中离群值（outliers）或者数据不均匀（比如数据被分为若干个小组）的影响，应该用更稳健的中心化和定标方法。
+
+6. PCA也存在一些限制，例如它可以很好的解除线性相关，但是对于高阶相关性就没有办法了，对于存在高阶相关性的数据，可以考虑Kernel PCA，通过Kernel函数将非线性相关转为线性相关，关于这点就不展开讨论了。另外，PCA假设数据各主特征是分布在正交方向上，如果在非正交方向上存在几个方差较大的方向，PCA的效果就大打折扣了。
+
+
+
+
+### 参考资料
+
+* https://www.zhihu.com/question/20998460
+* [PCA 教程1](http://blog.csdn.net/zhongkelee/article/details/44064401)
+* [PCA 文字化描述](http://www.xiaolingzi.com/?p=963)
+* [pca1](http://wenku.baidu.com/link?url=hsnzR5gUvsPBwkwwcWU4T3aTSC_fsZDxAmaGGBPfumsIW_I0TJAdJEWhFyiQgw7uA58DKukR-9g5x0DyzE97kHddMaXOxk_iZBjoIdbdB6e)
+
+* [ggplot2 axis](http://stackoverflow.com/questions/22092220/plot-only-y-axis-but-nothing-else)
+
+* [scatterplot3D](http://www.sthda.com/english/wiki/scatterplot3d-3d-graphics-r-software-and-data-visualization)
+
+* [稳健PCA](http://dong.farbox.com/32)
+
+* http://www.nlpca.org/pca_principal_component_analysis.html
+
+* [Data centering](http://gastonsanchez.com/how-to/2014/01/15/Center-data-in-R/)
+
+* [Sample R markdown](http://www.statpower.net/Content/310/R Stuff/SampleMarkdown.html)
+
+* [矩阵特征值，对称矩阵的对角化](http://www2.edu-edu.com.cn/lesson_crs78/self/02198/resource/contents/ch_05/ch_05.html)
+
+* [Detail usage and visualization of prcomp result](http://www.sthda.com/english/wiki/principal-component-analysis-in-r-prcomp-vs-princomp-r-software-and-data-mining)
+
+* [ggplot2 side by side plot](http://stackoverflow.com/questions/1249548/side-by-side-plots-with-ggplot2)
+* https://satijalab.org/seurat/pbmc3k_tutorial.html
+* http://www.sthda.com/english/articles/31-principal-component-methods-in-r-practical-guide/112-pca-principal-component-analysis-essentials/

@@ -1,0 +1,715 @@
+# Salmon定量结果差异分析
+
+在windows的`Rstudio`和远程访问Linux的`Rstudio`时都可以运行。
+
+```{r, include=F}
+knitr::opts_chunk$set(echo = T, out.width="100%", fig.align="center", fig.show="hold", warning=FALSE, message=FALSE)
+knitr::opts_chunk$set(cache=TRUE, autodep=TRUE)
+#Sys.setlocale(, 'Chinese')
+```
+
+## 基因表达标准化
+
+不同样品的测序量会有差异，最简单的标准化方式是计算 `counts per million (CPM)`，即原始`reads count`除以总reads数乘以1,000,000。
+
+这种计算方式的缺点是容易受到极高表达且在不同样品中存在差异表达的基因的影响；这些基因的打开或关闭会影响到细胞中总的分子数目，可能导致这些基因标准化之后就不存
+在表达差异了，而原本没有差异的基因标准化之后却有差异了。
+
+RPKM、FPKM和TPM是CPM按照基因或转录本长度归一化后的表达，也会受到这一影响。
+
+```{r calc-cpm, eval=FALSE, echo=T}
+calc_cpm <- function (expr_mat, spikes = NULL){
+  norm_factor <- colSums(expr_mat[-spikes,])
+  return(t(t(expr_mat)/norm_factor)) * 10^6
+}
+```
+
+为了解决这一问题，研究者提出了其它的标准化方法。
+
+**量化因子 (size factor, SF)**是由`DESeq`提出的。其方法是首先计算每个基因在所有样品中表达的几何平均值。每个细胞的量化因子(size factor)是所有基因与其在所有样
+品中的表达值的几何平均值的比值的中位数。由于几何平均值的使用，只有在所有样品中表达都不为0的基因才能用来计算。这一方法又被称为 **RLE (relative log expression)**。
+
+```{r calc-sf, eval=FALSE, echo=T}
+calc_sf2 <- function (expr_mat, spikes=NULL){
+  geomeans <- exp(rowMeans(log(expr_mat)))
+  SF <- function(cnts){
+    median((cnts/geomeans)[(is.finite(geomeans) & geomeans >0)])
+  }
+  norm_factor <- apply(expr_mat,2,SF)
+  return(t(t(expr_mat)/norm_factor))
+}
+```
+
+## 模拟获得size factor
+
+```{r}
+matrix <- matrix(sample(0:10,16, replace=T),nrow=4)
+rownames(matrix) <- paste0("Gene",1:nrow(matrix))
+colnames(matrix) <- paste0("Samp",1:ncol(matrix))
+matrix
+```
+
+```{r}
+matrix_log <- log(matrix)
+matrix_log
+matrix_rowmeans <- rowMeans(matrix_log)
+matrix_rowmeans
+
+geo_means <- exp(matrix_rowmeans)
+geo_means
+```
+
+```{r}
+matrix[,1]/geo_means
+```
+
+```{r}
+apply(matrix, 2, function(cnts){(cnts/geo_means)})
+```
+
+```{r}
+norm_factor = apply(matrix, 2, function(cnts){median((cnts/geo_means)[(is.finite(geo_means) & geo_means >0)])})
+```
+
+```{r}
+norm_factor
+```
+
+```{r}
+t(t(matrix)/norm_factor)
+```
+
+跟DESeq2自己的size factor函数比较
+
+```{r}
+library(DESeq2)
+estimateSizeFactorsForMatrix(matrix)
+```
+
+
+**上四分位数 (upperquartile, UQ)**是样品中所有基因的表达除以处于上四分位数的基因的表达值。同时为了保证表达水平的相对稳定，计算得到的上四分位数值要除以所有样
+品中上四分位数值的中位数。
+
+```{r calc-uq, eval=FALSE, echo=T}
+calc_uq <- function (expr_mat, spikes=NULL){
+  UQ <- function(x) {
+    quantile(x[x>0],0.75)
+  }
+  uq <- unlist(apply(expr_mat[-spikes,],2,UQ))
+  norm_factor <- uq/median(uq)
+  return(t(t(expr_mat)/norm_factor))
+}
+```
+
+**TMM**是M-值的加权截尾均值。选定一个样品为参照，其它样品中基因的表达相对于参照样品中对应基因表达倍数的log2值定义为M-值。随后去除M-值中最高和最低的30%，剩下
+的M值计算加权平均值。每一个非参照样品的基因表达值都乘以计算出的TMM。这个方法假设大部分基因的表达是没有差异的。
+
+## 安装依赖的包
+
+```{r, eval=F, echo=T}
+if (FALSE){
+	source("https://bioconductor.org/biocLite.R")
+	options(BioC_mirror="http://mirrors.ustc.edu.cn/bioc/")
+	biocLite(c("DESeq2","BiocParallel", "tximport"))
+	site= "https://mirrors.tuna.tsinghua.edu.cn/CRAN"
+	install.packages(c("RColorBrewer", "gplots", "amap", "reshape2", "ggplot2", "ggrepel", "pheatmap", repos=site))
+}
+```
+
+## 加载依赖的包
+
+```{r, include=F}
+library("RColorBrewer")
+suppressMessages(library("gplots"))
+library("amap") 
+library("reshape2")
+library("ggplot2")
+library("ggrepel")
+library("pheatmap")
+suppressMessages(library(DESeq2))
+library("BiocParallel")
+library("tximport")
+library("readr")
+```
+
+## 文件准备
+
+代码来源于流程`pipeline_salmon.sh`，以其为准。
+
+```{r, echo=F}
+knitr::include_graphics("salmon_result_for_deseq2.png")
+```
+
+## 初始化
+
+使用时只需要修改 `salmon.output`和`sampleFile` 即可。分组信息列必须是`conditionds`，如果不是，下面代码中的`conditions`也需相应的修改。这两个文件的获得见`12-转录组分析流程Salmon.pdf`的`整理Salmon结果`部分。
+
+
+```{r}
+# 所有输出结果的前缀，根据需要修改
+ehbio_output_prefix = "ehbio_salmon"
+ehbio_salmon_file_init = "salmon.output"
+# 分组信息列必须是`conditionds`，如果不是，下面代码中的`conditions`也许相应的修改
+ysx_sampleFile_init = "sampleFile"
+ysx_tx2gene_init = "genome/GRCh38.tx2gene"
+```
+
+读入数据并进行过滤 (若基因的reads count总和小于样品数的一半则过滤掉。过滤基因是为了去除低表达基因，减少建模所需时间和增加统计检测的强度)。DESeq2运行过程中也会进一步过滤，去掉那些不用统计检测也能看出的没有差异的基因。
+
+```{r}
+salmon_file <- read.table(ehbio_salmon_file_init, header=T,  row.names=1, sep="\t")
+salmon_file_rowname <- rownames(salmon_file)
+salmon_file <- as.vector(salmon_file[,1])
+names(salmon_file) <- salmon_file_rowname
+tx2gene <- read.table(ysx_tx2gene_init, header=T, row.names=NULL, sep="\t")
+# 整合读入的salmon文件和transcript2gene文件
+txi <- tximport(salmon_file, type = "salmon", tx2gene = tx2gene)
+
+sample <- read.table(ysx_sampleFile_init, header=T, row.names=1, com='',
+	quote='', check.names=F, sep="\t")
+sample <- sample[match(colnames(txi$counts), rownames(sample)),, drop=F]
+
+
+dds <- DESeqDataSetFromTximport(txi, colData=sample, design= ~conditions)
+print(paste("Read in", nrow(dds),"genes"))
+keep <- rowSums(counts(dds))>nrow(sample)/2
+dds <- dds[keep,]
+print(paste(nrow(dds),"genes remained after filtering of genes with all counts less than", nrow(sample)/2, "in all samples"))
+```
+
+## 差异分析
+
+```{r}
+dds <- DESeq(dds)
+```
+
+## 输出标准化后的结果
+
+标准化后的结果按整体差异大小排序，同时输出对数转换的结果。
+
+```{r}
+# Get normalized counts
+print("Output normalized counts")
+normalized_counts <- counts(dds, normalized=TRUE)
+
+# 标准化的结果按整体差异大小排序
+normalized_counts_mad <- apply(normalized_counts, 1, mad)
+normalized_counts <- normalized_counts[order(normalized_counts_mad, decreasing=T), ]
+
+# 常规R输出忽略左上角（输出文件第一列也就是基因列的列名字）
+# 输出结果为完整矩阵，保留左上角的id。
+normalized_counts_output = data.frame(id=rownames(normalized_counts), normalized_counts)
+write.table(normalized_counts_output, file=paste0(ehbio_output_prefix,".DESeq2.normalized.xls"),
+quote=F, sep="\t", row.names=F, col.names=T)
+
+
+rld <- rlog(dds, blind=FALSE)
+rlogMat <- assay(rld)
+rlogMat <- rlogMat[order(normalized_counts_mad, decreasing=T), ]
+
+
+print("Output rlog transformed normalized counts")
+rlogMat_output = data.frame(id=rownames(rlogMat), rlogMat)
+write.table(rlogMat_output, file=paste0(ehbio_output_prefix,".DESeq2.normalized.rlog.xls"),
+quote=F, sep="\t", row.names=F, col.names=T)
+```
+
+## 标准化后样品的表达分布
+
+```{r}
+rlog_mat_melt <- melt(rlogMat_output, id.vars = c('id'))
+ggplot(rlog_mat_melt, aes(x=variable, y=value)) + geom_boxplot(aes(color=variable)) +
+  geom_violin(aes(fill=variable), alpha=0.5) + theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1),
+        axis.title.x = element_blank()) + ylab("rLog transformed expression value")
+```
+
+## 样本层级聚类
+
+```{r}
+print("Performing sample clustering")
+hmcol <- colorRampPalette(brewer.pal(9, "GnBu"))(100)
+pearson_cor <- round(as.matrix(cor(rlogMat, method="pearson")),4)
+
+hc <- hcluster(t(rlogMat), method="pearson")
+
+# Get lower triangle of the correlation matrix
+get_lower_tri<-function(cormat){
+	cormat[upper.tri(cormat)] <- NA
+	return(cormat)
+}
+# Get upper triangle of the correlation matrix
+get_upper_tri <- function(cormat){
+	cormat[lower.tri(cormat)]<- NA
+	return(cormat)
+}
+
+pearson_cor <- pearson_cor[hc$order, hc$order]
+
+pearson_cor_output = data.frame(id=rownames(pearson_cor), pearson_cor)
+write.table(pearson_cor_output, file=paste0(ehbio_output_prefix,".DESeq2.pearson_cor.xls"),
+quote=F, sep="\t", row.names=F, col.names=T)
+
+upper_tri <- get_upper_tri(pearson_cor)
+# Melt the correlation matrix
+melted_cormat <- melt(upper_tri, na.rm = TRUE)
+
+col = colorRampPalette(rev(brewer.pal(n=7, name="RdYlBu")))(100)
+
+# Create a ggheatmap
+p <- ggplot(melted_cormat, aes(Var2, Var1, fill = value))+
+ geom_tile(color = "white")+
+ scale_fill_gradientn(colours=col, name="Pearson correlation") + theme_classic() +
+  coord_fixed() + 
+ theme(
+  axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1),
+  axis.title.x = element_blank(),
+  axis.title.y = element_blank(),
+  legend.justification = c(1, 0),
+  legend.position = "top",
+  legend.direction = "horizontal")+
+  guides(fill = guide_colorbar(barwidth = 8, barheight = 1,
+                title.position = "left"))
+
+p
+ggsave(filename=paste0(ehbio_output_prefix,".DESeq2.normalized.rlog.pearson.pdf"),width=13.5,height=15,units=c("cm"))
+```
+
+## PCA聚类分析
+
+
+```{r pca}
+#print("PCA analysis")
+formulaV <- c("conditions")
+
+topn = 5000
+rlogMat_nrow = nrow(rlogMat)
+if (topn > rlogMat_nrow){
+  topn = rlogMat_nrow
+}
+
+pca_mat = rlogMat[1:topn,]
+pca_mat <- as.data.frame(t(pca_mat))
+
+pca <- prcomp(pca_mat, scale=T)
+
+pca_x = pca$x
+
+pca_individual = data.frame(samp=rownames(pca_x), pca_x, sample)
+
+write.table(pca_individual, file=paste0(ehbio_output_prefix,".DESeq2.pca_individuals.xls"), sep="\t", quote=F, row.names=F, col.names=T)
+
+pca_percentvar <- formatC(pca$sdev^2 * 100 / sum( pca$sdev^2))
+
+
+if (length(formulaV)==1) {
+  p <- ggplot(pca_individual, aes(PC1, PC2, color=conditions))
+} else if (length(formulaV==2)) {
+  p <- ggplot(pca_data, aes(PC1, PC2, color=conditions,
+  shape=conditions))
+}
+
+p = p + geom_point(size=3) + 
+	xlab(paste0("PC1: ", pca_percentvar[1], "% variance")) +
+	ylab(paste0("PC2: ", pca_percentvar[2], "% variance")) +
+	geom_text_repel(aes(label=samp), show.legend=F) +
+	theme_classic() +
+	theme(legend.position="top", legend.title=element_blank())
+
+p
+ggsave(p, filename=paste0(ehbio_output_prefix,".DESeq2.normalized.rlog.pca.pdf"),width=13.5,height=15,units=c("cm"))
+
+pca_percentvar <- data.frame(PC=colnames(pca_x), Variance=pca_percentvar)
+write.table(pca_percentvar, file=paste0(ehbio_output_prefix,".DESeq2.pca_pc_weights.xls"), sep="\t", quote=F, row.names=F, col.names=T)
+```
+
+## 两组样品基因差异分析
+
+```{r, de_twosample}
+
+if (file.exists(paste0(ehbio_output_prefix,".DESeq2.all.DE"))) file.remove(paste0(ehbio_output_prefix,".DESeq2.all.DE"))
+
+# 定义待比较的两个样本的分组名字
+sampleA <- "untrt"
+sampleB <- "trt"
+
+# 后面无需修改
+print(paste("DE genes between", sampleA, sampleB, sep=" "))
+contrastV <- c("conditions", sampleA, sampleB)
+res <- results(dds,  contrast=contrastV)
+baseA <- counts(dds, normalized=TRUE)[, colData(dds)$conditions == sampleA]
+if (is.vector(baseA)){
+  baseMeanA <- as.data.frame(baseA)
+} else {
+  baseMeanA <- as.data.frame(rowMeans(baseA))
+}
+baseMeanA <- round(baseMeanA, 3)
+colnames(baseMeanA) <- sampleA
+baseB <- counts(dds, normalized=TRUE)[, colData(dds)$conditions == sampleB]
+if (is.vector(baseB)){
+  baseMeanB <- as.data.frame(baseB)
+} else {
+  baseMeanB <- as.data.frame(rowMeans(baseB))
+}
+baseMeanB <- round(baseMeanB, 3)
+colnames(baseMeanB) <- sampleB
+res <- cbind(baseMeanA, baseMeanB, as.data.frame(res))
+res <- data.frame(ID=rownames(res), res)
+res$baseMean <- round(rowMeans(cbind(baseA, baseB)),3)
+res$padj[is.na(res$padj)] <- 1
+res$pvalue[is.na(res$pvalue)] <- 1
+res$log2FoldChange <- round(res$log2FoldChange,3)
+res$padj <- as.numeric(formatC(res$padj))
+res$pvalue <- as.numeric(formatC(res$pvalue))
+
+res <- res[order(res$padj),]
+
+comp314 <- paste(sampleA, "_vs_", sampleB, sep=".")
+
+file_base <- paste(ehbio_output_prefix, ".DESeq2", comp314, sep=".")
+file_base1 <- paste(file_base, "results.xls", sep=".")
+
+res_output <- as.data.frame(subset(res,select=c('ID',sampleA,sampleB,"baseMean",'log2FoldChange','pvalue', 'padj')))
+write.table(res_output, file=file_base1, sep="\t", quote=F, row.names=F)
+
+res_de <- subset(res, res$padj<0.05, select=c('ID', sampleA,
+                                              sampleB, 'log2FoldChange', 'padj'))
+res_de_up <- subset(res_de, res_de$log2FoldChange>=1)
+file <- paste(ehbio_output_prefix, ".DESeq2",sampleA, "_higherThan_", sampleB, 'xls', sep=".") 
+write.table(as.data.frame(res_de_up), file=file, sep="\t", quote=F, row.names=F)
+res_de_up_id <- subset(res_de_up, select=c("ID"))
+#file <- paste(file_base, "DE_up_id", sep=".")
+file <- paste(ehbio_output_prefix, ".DESeq2",sampleA, "_higherThan_", sampleB,'id.xls', sep=".") 
+write.table(as.data.frame(res_de_up_id), file=file, sep="\t", 
+            quote=F, row.names=F, col.names=F)
+
+if(dim(res_de_up_id)[1]>0) {
+  res_de_up_id_l <- cbind(res_de_up_id, paste(sampleA, "_higherThan_",sampleB, sep="."))
+  write.table(as.data.frame(res_de_up_id_l), file=paste0(ehbio_output_prefix,".DESeq2.all.DE"),
+              sep="\t",quote=F, row.names=F, col.names=F, append=T)
+}
+
+res_de_dw <- subset(res_de, res_de$log2FoldChange<=(-1)*1)
+file <- paste(ehbio_output_prefix, ".DESeq2",sampleA, "_lowerThan_", sampleB, 'xls', sep=".") 
+write.table(as.data.frame(res_de_dw), file=file, sep="\t", quote=F, row.names=F)
+res_de_dw_id <- subset(res_de_dw, select=c("ID"))
+file <- paste(ehbio_output_prefix, ".DESeq2",sampleA, "_lowerThan_", sampleB, 'id.xls', sep=".") 
+write.table(as.data.frame(res_de_dw_id), file=file, sep="\t", 
+            quote=F, row.names=F, col.names=F)
+
+if(dim(res_de_dw_id)[1]>0) {
+  res_de_dw_id_l <- cbind(res_de_dw_id, paste(sampleA, "_lowerThan_",sampleB, sep="."))
+  write.table(as.data.frame(res_de_dw_id_l), file=paste0(ehbio_output_prefix,".DESeq2.all.DE"),
+              sep="\t",quote=F, row.names=F, col.names=F, append=T)
+}
+
+res_output$level <- ifelse(res_output$padj<=0.05, ifelse(res_output$log2FoldChange>=1, paste(sampleA,"UP"), ifelse(res_output$log2FoldChange<=1*(-1), paste(sampleB,"UP"), "NoDiff")) , "NoDiff")
+res_output$padj <- (-1) * log10(res_output$padj)
+res_output$padj <- replace(res_output$pad, res_output$pad>5, 5.005)
+
+boundary = ceiling(max(abs(res_output$log2FoldChange)))
+p = ggplot(res_output, aes(x=log2FoldChange,y=padj,color=level)) +
+  #geom_point(aes(size=baseMean), alpha=0.5) + theme_classic() +
+  geom_point(size=1, alpha=0.5) + theme_classic() +
+  xlab("Log2 transformed fold change") + ylab("Negative Log10 transformed FDR") +
+  xlim(-1 * boundary, boundary) + theme(legend.position="top", legend.title=element_blank())
+ggsave(p, filename=paste0(file_base1,".volcano.pdf"),width=13.5,height=15,units=c("cm"))
+p
+
+```
+## 根据log2FolcChange排序基因
+
+```{r}
+#head(res_output)
+# 整理数据，按差异倍数排序，增加横轴，选择log2差异倍数大于5的标记基因名字
+res_output_line <- res_output[order(res_output$log2FoldChange),]
+res_output_line$x <- 1:nrow(res_output_line)
+res_output_line[abs(res_output_line$log2FoldChange)<5 | res_output_line$level=="NoDiff", "ID"] <- NA
+head(res_output_line)
+
+library(ggrepel)
+p <- ggplot(res_output_line, aes(x=x, y=log2FoldChange)) + geom_point(aes(color=log2FoldChange)) + 
+  scale_color_gradient2(low="dark green", mid="yellow", high= "dark red", midpoint = 0) + 
+  theme_classic() + geom_hline(yintercept = 0, linetype="dotted")
+p
+
+# 标记基因名字
+p +  geom_text_repel(aes(label=ID))
+```
+
+## Top20差异显著的基因
+
+```{r}
+res_de_up_top20_id <- as.vector(head(res_de_up$ID,20))
+res_de_dw_top20_id <- as.vector(head(res_de_dw$ID,20))
+
+res_de_top20 <- c(res_de_up_top20_id, res_de_dw_top20_id)
+res_de_top20
+```
+
+差异基因热图
+
+```{r, fig.height=8}
+# 可以把矩阵存储，提交到www.ehbio.com/ImageGP绘制火山图
+# 或者使用我们的s-plot https://github.com/Tong-Chen/s-plot
+res_de_top20_expr <- normalized_counts[res_de_top20,]
+res_de_top20_expr
+library(pheatmap)
+pheatmap(res_de_top20_expr, cluster_row=T, scale="row", annotation_col=sample)
+```
+
+差异基因散点图
+
+```{r, fig.width=10}
+# 增加基因名字列
+res_de_top20_expr2 <- data.frame(Gene=rownames(res_de_top20_expr), res_de_top20_expr)
+head(res_de_top20_expr2)
+
+# 转换为长格式
+res_de_top20_expr2 <- melt(res_de_top20_expr, id=c("Gene"))
+colnames(res_de_top20_expr2) <- c("Gene", "Sample", "Expression")
+head(res_de_top20_expr2)
+
+# 图形绘制
+ggplot(res_de_top20_expr2, aes(x=Gene, y=Expression)) + geom_point(aes(color=Sample), alpha=0.5) + theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1),
+        axis.title.x = element_blank()) + ylab("Normalized xpression value") + scale_y_log10()
+```
+
+差异基因散点图
+
+```{r, fig.width=10}
+# 增加分组信息属性
+res_de_top20_expr2$Group <- sample[match(res_de_top20_expr2$Sample, rownames(sample)),1]
+head(res_de_top20_expr2)
+
+# 图形绘制
+ggplot(res_de_top20_expr2, aes(x=Gene, y=Expression)) + geom_point(aes(color=Group), alpha=0.5) + theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1),
+        axis.title.x = element_blank()) + ylab("Normalized xpression value") + scale_y_log10()
+```
+```{r}
+head(res_de_top20_expr2)
+```
+## 多组样品两两差异分析
+
+定义样品两两比较函数
+
+```{r, de_twosample}
+de_twosample <- function
+(
+dds, 
+sampleV
+){
+	#print(sampleV)
+	sampleA <- as.vector(sampleV$sampA)
+	sampleB <- as.vector(sampleV$sampB)
+	print(paste("DE genes between", sampleA, sampleB, sep=" "))
+	contrastV <- c("conditions", sampleA, sampleB)
+	res <- results(dds,  contrast=contrastV)
+	baseA <- counts(dds, normalized=TRUE)[, colData(dds)$conditions == sampleA]
+	if (is.vector(baseA)){
+		baseMeanA <- as.data.frame(baseA)
+	} else {
+		baseMeanA <- as.data.frame(rowMeans(baseA))
+	}
+	baseMeanA <- round(baseMeanA, 3)
+	colnames(baseMeanA) <- sampleA
+	baseB <- counts(dds, normalized=TRUE)[, colData(dds)$conditions == sampleB]
+	if (is.vector(baseB)){
+		baseMeanB <- as.data.frame(baseB)
+	} else {
+		baseMeanB <- as.data.frame(rowMeans(baseB))
+	}
+	baseMeanB <- round(baseMeanB, 3)
+	colnames(baseMeanB) <- sampleB
+	res <- cbind(baseMeanA, baseMeanB, as.data.frame(res))
+	res <- data.frame(ID=rownames(res), res)
+	res$baseMean <- round(rowMeans(cbind(baseA, baseB)),3)
+	res$padj[is.na(res$padj)] <- 1
+	res$pvalue[is.na(res$pvalue)] <- 1
+	res$log2FoldChange <- round(res$log2FoldChange,3)
+	res$padj <- as.numeric(formatC(res$padj))
+	res$pvalue <- as.numeric(formatC(res$pvalue))
+
+	res <- res[order(res$padj),]
+
+	comp314 <- paste(sampleA, "_vs_", sampleB, sep=".")
+
+	file_base <- paste(ehbio_output_prefix, ".DESeq2", comp314, sep=".")
+	file_base1 <- paste(file_base, "results.xls", sep=".")
+
+	res_output <- as.data.frame(subset(res,select=c('ID',sampleA,sampleB,"baseMean",'log2FoldChange','pvalue', 'padj')))
+	write.table(res_output, file=file_base1, sep="\t", quote=F, row.names=F)
+	
+	res_de <- subset(res, res$padj<0.05, select=c('ID', sampleA,
+		sampleB, 'log2FoldChange', 'padj'))
+	res_de_up <- subset(res_de, res_de$log2FoldChange>=1)
+	file <- paste(ehbio_output_prefix, ".DESeq2",sampleA, "_higherThan_", sampleB, 'xls', sep=".") 
+	write.table(as.data.frame(res_de_up), file=file, sep="\t", quote=F, row.names=F)
+	res_de_up_id <- subset(res_de_up, select=c("ID"))
+	#file <- paste(file_base, "DE_up_id", sep=".")
+	file <- paste(ehbio_output_prefix, ".DESeq2",sampleA, "_higherThan_", sampleB,'id.xls', sep=".") 
+	write.table(as.data.frame(res_de_up_id), file=file, sep="\t", 
+		quote=F, row.names=F, col.names=F)
+	
+	if(dim(res_de_up_id)[1]>0) {
+		res_de_up_id_l <- cbind(res_de_up_id, paste(sampleA, "_higherThan_",sampleB, sep="."))
+		write.table(as.data.frame(res_de_up_id_l), file=paste0(ehbio_output_prefix,".DESeq2.all.DE"),
+		sep="\t",quote=F, row.names=F, col.names=F, append=T)
+	}
+		
+	res_de_dw <- subset(res_de, res_de$log2FoldChange<=(-1)*1)
+	file <- paste(ehbio_output_prefix, ".DESeq2",sampleA, "_lowerThan_", sampleB, 'xls', sep=".") 
+	write.table(as.data.frame(res_de_dw), file=file, sep="\t", quote=F, row.names=F)
+	res_de_dw_id <- subset(res_de_dw, select=c("ID"))
+	file <- paste(ehbio_output_prefix, ".DESeq2",sampleA, "_lowerThan_", sampleB, 'id.xls', sep=".") 
+	write.table(as.data.frame(res_de_dw_id), file=file, sep="\t", 
+		quote=F, row.names=F, col.names=F)
+
+	if(dim(res_de_dw_id)[1]>0) {
+		res_de_dw_id_l <- cbind(res_de_dw_id, paste(sampleA, "_lowerThan_",sampleB, sep="."))
+		write.table(as.data.frame(res_de_dw_id_l), file=paste0(ehbio_output_prefix,".DESeq2.all.DE"),
+		sep="\t",quote=F, row.names=F, col.names=F, append=T)
+	}
+
+	res_output$level <- ifelse(res_output$padj<=0.05, ifelse(res_output$log2FoldChange>=1, paste(sampleA,"UP"), ifelse(res_output$log2FoldChange<=1*(-1), paste(sampleB,"UP"), "NoDiff")) , "NoDiff")
+	res_output$padj <- (-1) * log10(res_output$padj)
+	res_output$padj <- replace(res_output$pad, res_output$pad>5, 5.005)
+	
+	boundary = ceiling(max(abs(res_output$log2FoldChange)))
+	p = ggplot(res_output, aes(x=log2FoldChange,y=padj,color=level)) +
+         #geom_point(aes(size=baseMean), alpha=0.5) + theme_classic() +
+         geom_point(size=1, alpha=0.5) + theme_classic() +
+	 	 xlab("Log2 transformed fold change") + ylab("Negative Log10 transformed FDR") +
+		 xlim(-1 * boundary, boundary) + theme(legend.position="top", legend.title=element_blank())
+	ggsave(p, filename=paste0(file_base1,".volcano.pdf"),width=13.5,height=15,units=c("cm"))
+	p
+}
+```
+
+样品分组组合，并调用函数
+
+```{r}
+if (file.exists(paste0(ehbio_output_prefix,".DESeq2.all.DE"))) file.remove(paste0(ehbio_output_prefix,".DESeq2.all.DE"))
+
+compare_data <- as.vector(unique(sample$conditions))
+
+len_compare_data <- length(compare_data)
+for(i in 1:(len_compare_data-1)) {
+  for(j in (i+1):len_compare_data) {
+    tmp_compare <- data.frame(sampA=compare_data[i],sampB=compare_data[j])
+    de_twosample(dds, tmp_compare)
+  }
+}
+```
+
+
+
+
+
+## 结果文件描述
+
+```
+# 具体的文件内容和图的样式见后面的分步法文档
+# 原始输入文件
+salmon.output
+sampleFile
+
+# 所有差异基因列表
+ehbio_trans.Count_matrix.xls.DESeq2.all.DE
+
+# PCA结果
+ehbio_trans.Count_matrix.xls.DESeq2.normalized.rlog.pca.pdf
+
+# 样品相关性层级聚类结果
+ehbio_trans.Count_matrix.xls.DESeq2.normalized.rlog.pearson.pdf
+
+# rlog转换后的标准化后的表达结果
+ehbio_trans.Count_matrix.xls.DESeq2.normalized.rlog.xls
+
+# 标准化后的表达结果
+ehbio_trans.Count_matrix.xls.DESeq2.normalized.xls
+
+# 运行脚本
+ehbio_trans.Count_matrix.xls.DESeq2.r
+
+# 差异基因结果
+ehbio_trans.Count_matrix.xls.DESeq2.untrt._higherThan_.trt.id.xls
+ehbio_trans.Count_matrix.xls.DESeq2.untrt._higherThan_.trt.xls
+ehbio_trans.Count_matrix.xls.DESeq2.untrt._lowerThan_.trt.id.xls
+ehbio_trans.Count_matrix.xls.DESeq2.untrt._lowerThan_.trt.xls
+
+# 火山图和火山图输入数据
+ehbio_trans.Count_matrix.xls.DESeq2.untrt._vs_.trt.results.xls
+ehbio_trans.Count_matrix.xls.DESeq2.untrt._vs_.trt.results.xls.volcano.pdf
+```
+
+## 转换基因表的ENSEM id为gene symbol (为GSEA准备)
+
+```{bash}
+cd /c/transcriptome/13_salmon_deseq2_go
+awk 'BEGIN{OFS=FS="\t"}ARGIND==1{ensg2sym[$1]=$2;}ARGIND==2{if(FNR==1) print $0; else {a=ensg2sym[$1]; if(a!="") {$1=a; print $0;}}}' genome/GRCh38.idmap ehbio_salmon.DESeq2.normalized.xls >ehbio_salmon.DESeq2.normalized.symbol.txt
+
+head ehbio_salmon.DESeq2.normalized.symbol.txt
+```
+
+## 提取Log2FC值并转换为gene symbol (为GSEA准备)
+
+```{r}
+suppressMessages(library(data.table))
+
+vs_result <- read.table("ehbio_salmon..DESeq2.untrt._vs_.trt.results.xls", header=T, sep="\t", quote="")
+
+vs_result <- subset(vs_result, select=c("ID","log2FoldChange"))
+
+vs_result <- data.table(vs_result, key="ID")
+
+idmap <- read.table("genome/GRCh38.idmap", header=T, sep="\t", quote="")
+idmap <- data.table(idmap, key="ENSG")
+
+merge_result <- merge(vs_result, idmap, by.x="ID", by.y="ENSG", all.x=T)
+
+merge_result <- merge_result[order(merge_result$log2FoldChange, decreasing = T),]
+
+merge_result <- merge_result[merge_result$Symbol!="", c(3,2)]
+
+write.table(merge_result, "ehbio_salmon.DESeq2.log2fc_ranked.symbol", col.names = T, row.names = F, sep="\t", quote=F)
+```
+
+## 转换所有差异基因的名字为gene symbol 或 entrez id (为GO富集分析准备)
+
+```{bash}
+# GRCh38.idmap从ENSEMBL Biomart下载，三列文件，第一列为ensembl ID，第二列为gene symbol, 第三列为entrez id
+awk 'BEGIN{OFS=FS="\t"}ARGIND==1{entrez[$1]=$3;}\
+	ARGIND==2{if(entrez[$1]!="") print entrez[$1],$2;}' \
+	genome/GRCh38.idmap ehbio_salmon.DESeq2.all.DE \
+	>ehbio.DESeq2.all.DE.entrez
+awk 'BEGIN{OFS=FS="\t"}ARGIND==1{symbol[$1]=$2;}\
+	ARGIND==2{if(symbol[$1]!="") print symbol[$1],$2;}' \
+	genome/GRCh38.idmap ehbio_salmon.DESeq2.all.DE \
+	>ehbio.DESeq2.all.DE.symbol
+```
+
+## DEseq2分步计算
+
+```
+if ("" != "") {
+	print("Using given sizeFactor")
+	sizeFactorGiven = read.table("", header=T, row.names=1, 
+		sep="\t")
+	sizeFactorGiven2 = as.vector(unlist(sizeFactorGiven))
+	names(sizeFactorGiven2) = rownames(sizeFactorGiven)
+	sizeFactorGiven = sizeFactorGiven2
+	sizeFactors(dds) <- sizeFactorGiven
+} else {
+	print("estimate sizeFactor")
+	dds <- estimateSizeFactors(dds)
+	sizeFactorGenerate = sizeFactors(dds)	
+	write.table(sizeFactorGenerate, "./Public/ehbio/tmp/Monocyte_HSC_exprmat.txt.DESeq2.sizeFactor.xls", sep="\t", 
+		quote=F, row.names=T, col.names=T)
+}
+
+dds <- estimateDispersions(dds)
+dds <- nbinomWaldTest(dds)
+```

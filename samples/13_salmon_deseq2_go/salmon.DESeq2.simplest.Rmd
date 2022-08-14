@@ -1,0 +1,32 @@
+```{r}
+library(DESeq2)
+library("RColorBrewer")
+library("gplots")
+library("amap")
+library("ggplot2")
+library("BiocParallel")
+library("YSX")
+
+```
+
+
+```{r}
+output_prefix = "ehbio2"
+file = "salmon.output"
+sampleFile = "sampleFile"
+design="conditions"
+tx2gene="genome/GRCh38.tx2gene"
+type="salmon"
+padj=0.05
+log2FC=1
+```
+
+```{r}
+DESeq2_ysx(file, sampleFile, design=design, type=type, tx2gene=tx2gene, 
+           output_prefix=output_prefix, padj=padj, log2FC=log2FC)
+```
+
+
+
+
+
