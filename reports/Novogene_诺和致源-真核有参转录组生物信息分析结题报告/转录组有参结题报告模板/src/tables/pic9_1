@@ -1,6 +1,0 @@
-<div class="fullview"> <img src="src/pictures/9.1ExpLev/boxplot.png" alt="boxplot" /></div>
-<div class="slider">
-<div class="button movebackward" title="向上滚动"></div>
-<div class="imglistwrap"><ul class="imglist">
-<li><a id="example2" href="src/pictures/9.1ExpLev/boxplot.png" ><img src="src/pictures/9.1ExpLev/boxplot.JPEG" alt="boxplot" /></a></li>	
-<li><a id="example2" href="src/pictures/9.1ExpLev/density.png" ><img src="src/pictures/9.1ExpLev/density.JPEG" alt="density" /></a></li>	
